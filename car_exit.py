@@ -95,21 +95,22 @@ def read_distance(arduino):
         return 150
 
 def is_payment_complete(plate_number):
-    """Check payment status in CSV"""
+    """Check if the latest record for this plate has Payment Status = 1 (Paid but not exited)"""
     if not os.path.exists(csv_file):
         print(f"[WARNING] CSV file {csv_file} not found")
         return False
-    
+
     try:
         with open(csv_file, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if row['Plate Number'] == plate_number and row['Payment Status'] == '1':
-                    return True
-        return False
+            reader = list(csv.DictReader(f))
+            for row in reversed(reader):  # Check from most recent entry
+                if row['Plate Number'] == plate_number:
+                    return row['Payment Status'] == '1'
+        return False  # Plate not found
     except Exception as e:
         print(f"[ERROR] Reading CSV file: {e}")
         return False
+
 
 def update_exit_status(plate_number):
     """Update CSV to mark vehicle as exited (optional feature)"""

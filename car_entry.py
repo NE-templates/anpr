@@ -165,12 +165,42 @@ try:
                                     if (most_common != last_saved_plate or
                                         (current_time - last_entry_time) > entry_cooldown):
                                         
-                                        # Log to CSV
-                                        with open(csv_file, 'a', newline='') as f:
-                                            writer = csv.writer(f)
-                                            writer.writerow([most_common, 0, time.strftime('%Y-%m-%d %H:%M:%S')])
-                                        print(f"[SAVED] {most_common} logged to CSV.")
+
+                                        # Check if the plate already exists with status 0 (not yet paid/exited)
+                                        should_log = True
+                                        with open(csv_file, 'r') as f:
+                                            reader = csv.reader(f)
+                                            next(reader)  # Skip header
+                                            for row in reader:
+                                                if len(row) >= 2 and row[0] == most_common and row[1] == '0':
+                                                    print(f"[BLOCKED] {most_common} has already entered and not paid/exited.")
+                                                    should_log = False
+                                                    break
                                         
+                                        if should_log:
+                                            # Log to CSV
+                                            with open(csv_file, 'a', newline='') as f:
+                                                writer = csv.writer(f)
+                                                writer.writerow([most_common, 0, time.strftime('%Y-%m-%d %H:%M:%S')])
+                                            print(f"[SAVED] {most_common} logged to CSV.")
+                                            
+                                            # Control gate
+                                            if arduino:
+                                                try:
+                                                    arduino.write(b'1')
+                                                    print("[GATE] Opening gate (sent '1')")
+                                                    time.sleep(15)
+                                                    arduino.write(b'0')
+                                                    print("[GATE] Closing gate (sent '0')")
+                                                except serial.SerialException as e:
+                                                    print(f"[ERROR] Gate control failed: {e}")
+                                            
+                                            last_saved_plate = most_common
+                                            last_entry_time = current_time
+                                        else:
+                                            print(f"[INFO] Duplicate entry blocked for {most_common}.")
+                                        
+                                                                                
                                         # Control gate
                                         if arduino:
                                             try:
