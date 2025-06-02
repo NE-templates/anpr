@@ -1,21 +1,26 @@
 #include <Servo.h>
 
-// Pin definitions for Wemos D1 Mini
-#define TRIGGER_PIN 15    // D8 (GPIO15)
-#define ECHO_PIN 13       // D7 (GPIO13)
-#define SERVO_PIN 2       // D4 (GPIO2)
-#define LED_STATUS_PIN 16 // D0 (GPIO16) - Status LED (optional)
+// Pin Definitions (from your second code)
+#define TRIGGER_PIN 2
+#define ECHO_PIN 3
+#define RED_LED_PIN 4
+#define BLUE_LED_PIN 5
+#define SERVO_PIN 6
+#define GND_PIN_1 7
+#define GND_PIN_2 8
+#define BUZZER_PIN 12
 
-// Gate configuration
-#define GATE_CLOSED_ANGLE 0
-#define GATE_OPEN_ANGLE 180
-#define SERVO_MOVE_DELAY 15    // Delay between servo steps (ms)
-#define SAFETY_DISTANCE 20.0   // Minimum safe distance in cm
-#define MAX_DISTANCE 400.0     // Maximum valid distance reading
-#define AUTO_CLOSE_TIME 5000   // Auto-close after 5 seconds
-#define DISTANCE_SAMPLES 5     // Number of distance readings to average
+// Gate Configuration
+#define GATE_CLOSED_ANGLE 6
+#define GATE_OPEN_ANGLE 90
+#define SERVO_MOVE_DELAY 15       // Delay between servo steps (ms)
+#define OBSTACLE_DISTANCE 50.0    // Obstacle detection threshold in cm
+#define MAX_DISTANCE 400.0        // Maximum valid distance reading
+#define AUTO_CLOSE_TIME 5000      // Auto-close after 5 seconds
+#define DISTANCE_SAMPLES 3        // Number of distance readings to average
+#define BUZZ_INTERVAL 300         // Buzzer interval in ms
 
-// System states
+// System States
 enum GateState {
   CLOSED,
   OPENING,
@@ -26,56 +31,82 @@ enum GateState {
 
 Servo barrierServo;
 GateState currentState = CLOSED;
-unsigned long lastCommandTime = 0;
 unsigned long gateOpenTime = 0;
-bool autoCloseEnabled = true;
+unsigned long lastBuzzTime = 0;
 int currentServoAngle = GATE_CLOSED_ANGLE;
+bool buzzerState = false;
+bool obstaclePresent = false;
 
-void setup() {
-  Serial.begin(115200);
-  
-  // Initialize pins
+// ============================
+// Initialization Functions
+// ============================
+void initializeSerial() {
+  Serial.begin(9600);
+}
+
+void initializeUltrasonic() {
   pinMode(TRIGGER_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
-  pinMode(LED_STATUS_PIN, OUTPUT);
-  
-  // Initialize servo
+}
+
+void initializeLEDs() {
+  pinMode(RED_LED_PIN, OUTPUT);
+  pinMode(BLUE_LED_PIN, OUTPUT);
+}
+
+void initializeBuzzer() {
+  pinMode(BUZZER_PIN, OUTPUT);
+}
+
+void initializeHardcodedGrounds() {
+  pinMode(GND_PIN_1, OUTPUT);
+  pinMode(GND_PIN_2, OUTPUT);
+  digitalWrite(GND_PIN_1, LOW);
+  digitalWrite(GND_PIN_2, LOW);
+}
+
+void initializeServo() {
   barrierServo.attach(SERVO_PIN);
   barrierServo.write(GATE_CLOSED_ANGLE);
   currentServoAngle = GATE_CLOSED_ANGLE;
-  
-  // Initialize status LED
-  digitalWrite(LED_STATUS_PIN, LOW);
-  
-  Serial.println("GATE_CONTROLLER_READY");
-  Serial.println("Commands: 1=Open, 0=Close, S=Status, A=Toggle Auto-close");
-  Serial.println("Current State: CLOSED");
-  
-  delay(1000); // Allow servo to settle
 }
 
-void loop() {
-  // Read distance with error handling
-  float distance = getAverageDistance();
+void testIndicators() {
+  digitalWrite(BLUE_LED_PIN, HIGH);
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(500);
+  digitalWrite(BLUE_LED_PIN, LOW);
+  digitalWrite(BUZZER_PIN, LOW);
+  digitalWrite(RED_LED_PIN, HIGH);
+}
+
+// ============================
+// Distance Measurement
+// ============================
+float readUltrasonicDistance() {
+  // Send ultrasonic pulse
+  digitalWrite(TRIGGER_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIGGER_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIGGER_PIN, LOW);
   
-  // Send distance reading
-  if (distance > 0) {
-    Serial.print("DISTANCE:");
-    Serial.println(distance, 1);
-  } else {
-    Serial.println("DISTANCE:ERROR");
+  // Read echo with timeout
+  long duration = pulseIn(ECHO_PIN, HIGH, 30000); // 30ms timeout
+  
+  if (duration == 0) {
+    return -1; // Timeout or no echo
   }
   
-  // Process serial commands
-  processSerialCommands();
+  // Calculate distance in cm
+  float distance = (duration * 0.0343) / 2.0;
   
-  // Handle gate state machine
-  handleGateStateMachine(distance);
+  // Validate distance range
+  if (distance < 2.0 || distance > MAX_DISTANCE) {
+    return -1; // Invalid reading
+  }
   
-  // Update status LED
-  updateStatusLED();
-  
-  delay(100); // Main loop delay
+  return distance;
 }
 
 float getAverageDistance() {
@@ -104,137 +135,9 @@ float getAverageDistance() {
   return sum / validReadings;
 }
 
-float readUltrasonicDistance() {
-  // Send ultrasonic pulse
-  digitalWrite(TRIGGER_PIN, LOW);
-  delayMicroseconds(2);
-  digitalWrite(TRIGGER_PIN, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(TRIGGER_PIN, LOW);
-  
-  // Read echo with timeout
-  long duration = pulseIn(ECHO_PIN, HIGH, 30000); // 30ms timeout
-  
-  if (duration == 0) {
-    return -1; // Timeout or no echo
-  }
-  
-  // Calculate distance in cm
-  float distance = (duration * 0.0343) / 2.0;
-  
-  // Validate distance range
-  if (distance < 2.0 || distance > MAX_DISTANCE) {
-    return -1; // Invalid reading
-  }
-  
-  return distance;
-}
-
-void processSerialCommands() {
-  if (!Serial.available()) return;
-  
-  char cmd = Serial.read();
-  
-  // Clear any remaining characters in buffer
-  while (Serial.available()) {
-    Serial.read();
-  }
-  
-  switch (cmd) {
-    case '1':
-    case 'O':
-    case 'o':
-      openGate();
-      break;
-      
-    case '0':
-    case 'C':
-    case 'c':
-      closeGate();
-      break;
-      
-    case 'S':
-    case 's':
-      printStatus();
-      break;
-      
-    case 'A':
-    case 'a':
-      toggleAutoClose();
-      break;
-      
-    case 'E':
-    case 'e':
-      emergencyStop();
-      break;
-      
-    default:
-      Serial.println("UNKNOWN_COMMAND");
-      Serial.println("Commands: 1/O=Open, 0/C=Close, S=Status, A=Auto-close, E=Emergency");
-      break;
-  }
-  
-  lastCommandTime = millis();
-}
-
-void handleGateStateMachine(float distance) {
-  static unsigned long stateChangeTime = 0;
-  
-  switch (currentState) {
-    case CLOSED:
-      // Gate is closed, ready for commands
-      break;
-      
-    case OPENING:
-      if (currentServoAngle >= GATE_OPEN_ANGLE) {
-        currentState = OPEN;
-        gateOpenTime = millis();
-        Serial.println("STATE:OPEN");
-      }
-      break;
-      
-    case OPEN:
-      // Check for auto-close timeout
-      if (autoCloseEnabled && (millis() - gateOpenTime > AUTO_CLOSE_TIME)) {
-        // Only auto-close if no obstacle detected
-        if (distance < 0 || distance > SAFETY_DISTANCE) {
-          Serial.println("AUTO_CLOSING");
-          closeGate();
-        } else {
-          // Reset timer if obstacle still present
-          gateOpenTime = millis();
-          Serial.println("AUTO_CLOSE_DELAYED:OBSTACLE");
-        }
-      }
-      break;
-      
-    case CLOSING:
-      // Check for obstacles while closing
-      if (distance > 0 && distance <= SAFETY_DISTANCE) {
-        Serial.println("OBSTACLE_DETECTED:STOPPING");
-        emergencyStop();
-        currentState = BLOCKED;
-        stateChangeTime = millis();
-      } else if (currentServoAngle <= GATE_CLOSED_ANGLE) {
-        currentState = CLOSED;
-        Serial.println("STATE:CLOSED");
-      }
-      break;
-      
-    case BLOCKED:
-      // Wait for obstacle to clear
-      if (distance < 0 || distance > SAFETY_DISTANCE) {
-        if (millis() - stateChangeTime > 2000) { // 2 second delay
-          Serial.println("OBSTACLE_CLEARED:RESUMING");
-          closeGate(); // Resume closing
-        }
-      } else {
-        stateChangeTime = millis(); // Reset timer while obstacle present
-      }
-      break;
-  }
-}
-
+// ============================
+// Gate Control Functions
+// ============================
 void openGate() {
   if (currentState == OPEN || currentState == OPENING) {
     Serial.println("GATE_ALREADY_OPEN");
@@ -253,6 +156,12 @@ void openGate() {
     barrierServo.write(currentServoAngle);
     delay(SERVO_MOVE_DELAY);
   }
+  
+  currentState = OPEN;
+  gateOpenTime = millis();
+  digitalWrite(BLUE_LED_PIN, HIGH);
+  digitalWrite(RED_LED_PIN, LOW);
+  Serial.println("STATE:OPEN");
 }
 
 void closeGate() {
@@ -275,12 +184,20 @@ void closeGate() {
     
     // Check for obstacles during closing
     float distance = readUltrasonicDistance();
-    if (distance > 0 && distance <= SAFETY_DISTANCE) {
+    if (distance > 0 && distance <= OBSTACLE_DISTANCE) {
       Serial.println("OBSTACLE_DETECTED:STOPPING");
       emergencyStop();
       currentState = BLOCKED;
       return;
     }
+  }
+  
+  if (currentState == CLOSING) {
+    currentState = CLOSED;
+    digitalWrite(BLUE_LED_PIN, LOW);
+    digitalWrite(RED_LED_PIN, HIGH);
+    digitalWrite(BUZZER_PIN, LOW); // Stop buzzing
+    Serial.println("STATE:CLOSED");
   }
 }
 
@@ -292,17 +209,117 @@ void emergencyStop() {
   // Determine new state based on position
   if (currentServoAngle > (GATE_OPEN_ANGLE / 2)) {
     currentState = OPEN;
+    gateOpenTime = millis(); // Reset auto-close timer
   } else {
     currentState = CLOSED;
   }
 }
 
-void toggleAutoClose() {
-  autoCloseEnabled = !autoCloseEnabled;
-  Serial.print("AUTO_CLOSE:");
-  Serial.println(autoCloseEnabled ? "ENABLED" : "DISABLED");
+// ============================
+// Serial Command Handling
+// ============================
+void handleSerialCommands() {
+  if (Serial.available()) {
+    char cmd = Serial.read();
+    
+    // Clear any remaining characters in buffer
+    while (Serial.available()) {
+      Serial.read();
+    }
+    
+    switch (cmd) {
+      case '1':
+        openGate();
+        break;
+        
+      case '0':
+        closeGate();
+        break;
+        
+      case 'S':
+      case 's':
+        printStatus();
+        break;
+        
+      default:
+        Serial.println("UNKNOWN_COMMAND");
+        Serial.println("Commands: 1=Open (from Python), 0=Close, S=Status");
+        break;
+    }
+  }
 }
 
+// ============================
+// Buzzer Control
+// ============================
+void handleBuzzer() {
+  if (obstaclePresent) {
+    unsigned long currentMillis = millis();
+    if (currentMillis - lastBuzzTime >= BUZZ_INTERVAL) {
+      buzzerState = !buzzerState;
+      digitalWrite(BUZZER_PIN, buzzerState);
+      lastBuzzTime = currentMillis;
+    }
+  } else {
+    digitalWrite(BUZZER_PIN, LOW);
+    buzzerState = false;
+  }
+}
+
+// ============================
+// State Machine
+// ============================
+void handleGateStateMachine(float distance) {
+  static unsigned long stateChangeTime = 0;
+  
+  // Update obstacle status
+  obstaclePresent = (distance > 0 && distance <= OBSTACLE_DISTANCE);
+  
+  switch (currentState) {
+    case CLOSED:
+      // Gate is closed, ready for Python commands
+      break;
+      
+    case OPENING:
+      // Opening completed in openGate() function
+      break;
+      
+    case OPEN:
+      // Check for auto-close timeout
+      if (millis() - gateOpenTime > AUTO_CLOSE_TIME) {
+        // Only auto-close if no obstacle detected
+        if (!obstaclePresent) {
+          Serial.println("AUTO_CLOSING");
+          closeGate();
+        } else {
+          // Reset timer if obstacle still present
+          gateOpenTime = millis();
+          Serial.println("AUTO_CLOSE_DELAYED:OBSTACLE");
+        }
+      }
+      break;
+      
+    case CLOSING:
+      // Obstacle detection handled in closeGate() function
+      break;
+      
+    case BLOCKED:
+      // Wait for obstacle to clear
+      if (!obstaclePresent) {
+        if (millis() - stateChangeTime > 2000) { // 2 second delay
+          Serial.println("OBSTACLE_CLEARED:RESUMING");
+          closeGate(); // Resume closing
+        }
+      } else {
+        stateChangeTime = millis(); // Reset timer while obstacle present
+      }
+      break;
+  }
+}
+
+// ============================
+// Status Functions
+// ============================
 void printStatus() {
   Serial.println("=== GATE STATUS ===");
   Serial.print("STATE:");
@@ -315,9 +332,10 @@ void printStatus() {
   }
   Serial.print("SERVO_ANGLE:");
   Serial.println(currentServoAngle);
-  Serial.print("AUTO_CLOSE:");
-  Serial.println(autoCloseEnabled ? "ENABLED" : "DISABLED");
-  if (currentState == OPEN && autoCloseEnabled) {
+  Serial.print("OBSTACLE_PRESENT:");
+  Serial.println(obstaclePresent ? "YES" : "NO");
+  
+  if (currentState == OPEN) {
     unsigned long timeRemaining = AUTO_CLOSE_TIME - (millis() - gateOpenTime);
     if (timeRemaining > 0) {
       Serial.print("AUTO_CLOSE_IN:");
@@ -328,36 +346,46 @@ void printStatus() {
   Serial.println("==================");
 }
 
-void updateStatusLED() {
-  static unsigned long lastBlink = 0;
-  static bool ledState = false;
+// ============================
+// Setup and Main Loop
+// ============================
+void setup() {
+  initializeSerial();
+  initializeUltrasonic();
+  initializeLEDs();
+  initializeBuzzer();
+  initializeHardcodedGrounds();
+  initializeServo();
+  testIndicators();
   
-  switch (currentState) {
-    case CLOSED:
-      digitalWrite(LED_STATUS_PIN, LOW); // Off
-      break;
-      
-    case OPEN:
-      digitalWrite(LED_STATUS_PIN, HIGH); // On
-      break;
-      
-    case OPENING:
-    case CLOSING:
-      // Slow blink
-      if (millis() - lastBlink > 500) {
-        ledState = !ledState;
-        digitalWrite(LED_STATUS_PIN, ledState);
-        lastBlink = millis();
-      }
-      break;
-      
-    case BLOCKED:
-      // Fast blink
-      if (millis() - lastBlink > 150) {
-        ledState = !ledState;
-        digitalWrite(LED_STATUS_PIN, ledState);
-        lastBlink = millis();
-      }
-      break;
+  Serial.println("GATE_CONTROLLER_READY");
+  Serial.println("Waiting for Python license plate detection...");
+  Serial.println("Commands: 1=Open (from Python), 0=Close, S=Status");
+  Serial.println("Current State: CLOSED");
+  
+  delay(1000); // Allow servo to settle
+}
+
+void loop() {
+  // Read distance with error handling
+  float distance = getAverageDistance();
+  
+  // Send distance reading to Python
+  if (distance > 0) {
+    Serial.print("DISTANCE:");
+    Serial.println(distance, 1);
+  } else {
+    Serial.println("DISTANCE:ERROR");
   }
+  
+  // Process serial commands from Python
+  handleSerialCommands();
+  
+  // Handle gate state machine
+  handleGateStateMachine(distance);
+  
+  // Handle buzzer for obstacle alerts
+  handleBuzzer();
+  
+  delay(100); // Main loop delay
 }
