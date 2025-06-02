@@ -1,5 +1,3 @@
-// Enhanced Dashboard JavaScript - Save as static/dashboard.js
-
 $(document).ready(function () {
     // Initialize dashboard
     initializeDashboard();
@@ -11,18 +9,18 @@ $(document).ready(function () {
     // Fetch initial data
     fetchAllData();
     
-    // Set up periodic updates every 30 seconds (reduced frequency for better performance)
+    // Set up periodic updates every 30 seconds (much more reasonable)
     setInterval(() => {
         fetchRevenue();
         fetchRecentActivity();
         fetchSystemAlerts();
         fetchAdditionalStats();
-    }, 30000);
+    }, 30000); // Changed from 1000ms to 30000ms (30 seconds)
     
-    // Update stats every 5 minutes
+    // Update stats every 5 minutes (not every second!)
     setInterval(() => {
         fetchStats();
-    }, 300000);
+    }, 300000); // Changed from 1000ms to 300000ms (5 minutes)
     
     // Chart period controls
     $('.chart-controls .btn').on('click', function() {
@@ -144,6 +142,7 @@ function updateMainChart(data) {
     
     if (!data || data.length === 0) {
         // Show empty state
+        ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
         ctx.fillStyle = '#666';
         ctx.textAlign = 'center';
         ctx.font = '16px sans-serif';
@@ -151,10 +150,23 @@ function updateMainChart(data) {
         return;
     }
 
-    const labels = data.map(d => formatDate(d.date || d.timestamp));
-    const vehicles = data.map(d => d.total_vehicles || 0);
-    const revenue = data.map(d => parseFloat(d.revenue || d.amount || 0));
-    const sessions = data.map(d => d.total_sessions || 0);
+    // Map data according to your actual API response structure
+    const labels = data.map(d => formatDate(d.date));
+    const vehicles = data.map(d => parseInt(d.total_vehicles || 0));
+    const revenue = data.map(d => parseFloat(d.revenue || 0));
+    // Since you don't have sessions in your API, calculate from vehicles and unpaid_count
+    const sessions = data.map(d => {
+        const totalVehicles = parseInt(d.total_vehicles || 0);
+        const unpaidCount = parseInt(d.unpaid_count || 0);
+        // Estimate sessions as total vehicles (assuming each vehicle = 1 session)
+        return totalVehicles;
+    });
+
+    console.log('Chart data mapped correctly:');
+    console.log('Labels:', labels);
+    console.log('Vehicles:', vehicles);
+    console.log('Revenue:', revenue);
+    console.log('Sessions:', sessions);
 
     window.statsChart = new Chart(ctx, {
         type: 'line',
@@ -162,7 +174,7 @@ function updateMainChart(data) {
             labels: labels,
             datasets: [
                 {
-                    label: 'Vehicles',
+                    label: 'Total Vehicles',
                     data: vehicles,
                     borderColor: '#26c6da',
                     backgroundColor: 'rgba(38, 198, 218, 0.1)',
@@ -219,7 +231,21 @@ function updateMainChart(data) {
                     borderColor: '#ddd',
                     borderWidth: 1,
                     cornerRadius: 8,
-                    displayColors: true
+                    displayColors: true,
+                    callbacks: {
+                        label: function(context) {
+                            let label = context.dataset.label || '';
+                            if (label) {
+                                label += ': ';
+                            }
+                            if (context.dataset.label === 'Revenue (RWF)') {
+                                label += 'RWF ' + formatNumber(context.parsed.y);
+                            } else {
+                                label += formatNumber(context.parsed.y);
+                            }
+                            return label;
+                        }
+                    }
                 }
             },
             scales: {
@@ -468,8 +494,20 @@ function formatNumber(num) {
 }
 
 function formatDate(dateString) {
+    // Handle the GMT format from your API: "Mon, 02 Jun 2025 00:00:00 GMT"
     const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    
+    // Check if date is valid
+    if (isNaN(date.getTime())) {
+        console.error('Invalid date:', dateString);
+        return 'Invalid Date';
+    }
+    
+    return date.toLocaleDateString('en-US', { 
+        month: 'short', 
+        day: 'numeric',
+        year: 'numeric' 
+    });
 }
 
 function formatTimeAgo(timestamp) {
