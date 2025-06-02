@@ -33,7 +33,7 @@ def create_table_if_not_exists():
             payment_status TINYINT,
             amount DECIMAL(10, 2) DEFAULT 0.00,
             timestamp DATETIME,
-            gate VARCHAR(10)
+            gate VARCHAR(20)
         )''')
         conn.commit()
         print("[DB] Table 'parking_sessions' ensured.")
@@ -193,8 +193,22 @@ def update_payment_status_db(plate_number, amount_paid):
 
 def log_unauthorized_exit(plate_number):
     """Log a gate tampering or unpaid exit event"""
-    log_plate_to_db(plate_number, payment_status=0, amount=0.00, gate='unauthorized')
-    print(f"[ALERT] Unauthorized exit logged for {plate_number}")
+    conn = connect_db()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE parking_sessions SET gate = 'unauthorized'
+                WHERE plate_number = %s AND payment_status = 0
+                ''', (plate_number,))
+            conn.commit()
+            print(f"[DB] Logged to DB tampering: {plate_number}")
+        except Error as e:
+            print(f"[DB ERROR] UPDATE failed: {e}")
+        finally:
+            cursor.close()
+            conn.close()
+
 
 def get_total_revenue():
     conn = connect_db()

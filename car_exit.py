@@ -7,7 +7,7 @@ import serial
 import serial.tools.list_ports
 import csv
 from collections import Counter
-from web.db import is_payment_complete_db, update_exit_status_db, is_already_exited
+from web.db import is_payment_complete_db, update_exit_status_db, is_already_exited, log_unauthorized_exit
 
 
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
@@ -212,6 +212,7 @@ try:
                                             time.sleep(5)
                                         else:
                                             print(f"[ACCESS DENIED] Payment NOT complete for {most_common}")
+                                            log_unauthorized_exit(most_common)
                                             if arduino:
                                                 try:
                                                     arduino.write(b'2')  # Alert
