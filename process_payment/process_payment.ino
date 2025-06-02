@@ -7,8 +7,8 @@
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 MFRC522::MIFARE_Key key;
 
-const int PLATE_BLOCK = 1;
-const int BALANCE_BLOCK = 2;
+const int PLATE_BLOCK = 2;
+const int BALANCE_BLOCK = 4;
 const unsigned long CARD_TIMEOUT = 5000; // 5 seconds timeout for card operations
 
 void setup() {
@@ -172,8 +172,16 @@ float readBalance() {
     return -1;
   }
 
-  float balance;
-  memcpy(&balance, buffer, sizeof(float));
+  // Read balance as string and convert to float
+  String balanceStr = "";
+  for (int i = 0; i < 16; i++) {
+    if (buffer[i] != 0 && isPrintable(buffer[i]) && buffer[i] != ' ') {
+      balanceStr += (char)buffer[i];
+    }
+  }
+  
+  balanceStr.trim();
+  float balance = balanceStr.toFloat();
   
   // Validate balance (should be positive and reasonable)
   if (balance < 0 || balance > 99999999.99) {
@@ -183,19 +191,62 @@ float readBalance() {
   return balance;
 }
 
-bool writeBalance(float newBalance) {
-  byte writeBuffer[16];
-  memset(writeBuffer, 0, sizeof(writeBuffer));
-  memcpy(writeBuffer, &newBalance, sizeof(float));
-
-  MFRC522::StatusCode status = mfrc522.PCD_Authenticate(
-    MFRC522::PICC_CMD_MF_AUTH_KEY_A, BALANCE_BLOCK, &key, &(mfrc522.uid)
-  );
+bool writeBytesToBlock(byte block, byte buff[]) {
+  MFRC522::StatusCode card_status;
   
-  if (status != MFRC522::STATUS_OK) {
+  card_status = mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, block, &key, &(mfrc522.uid));
+
+  if (card_status != MFRC522::STATUS_OK) {
+    Serial.print(F("❌ Authentication failed: "));
+    Serial.println(mfrc522.GetStatusCodeName(card_status));
     return false;
+  } else {
+    Serial.println(F("🔓 Authentication success."));
   }
 
-  status = mfrc522.MIFARE_Write(BALANCE_BLOCK, writeBuffer, 16);
-  return (status == MFRC522::STATUS_OK);
+  card_status = mfrc522.MIFARE_Write(block, buff, 16);
+  if (card_status != MFRC522::STATUS_OK) {
+    Serial.print(F("❌ Write failed: "));
+    Serial.println(mfrc522.GetStatusCodeName(card_status));
+    return false;
+  } else {
+    Serial.println(F("✅ Data written successfully."));
+    return true;
+  }
+}
+
+
+bool writeBalance(float newBalance) {
+  // Use dtostrf instead of snprintf for better Arduino compatibility
+  char balanceStr[16];
+  memset(balanceStr, 0, sizeof(balanceStr)); // Clear the buffer first
+  
+  // dtostrf(float_value, min_width, num_decimals, char_buffer)
+  dtostrf(newBalance, 0, 2, balanceStr);
+  
+  // Debug: Print what we're trying to write
+  Serial.print(F("Debug: Attempting to write balance: "));
+  Serial.println(balanceStr);
+  
+  byte balanceBuff[16];
+  memset(balanceBuff, 0, sizeof(balanceBuff));
+  memcpy(balanceBuff, balanceStr, strlen(balanceStr));
+  
+  // Debug: Print the buffer contents
+  Serial.print(F("Debug: Buffer contents: "));
+  for(int i = 0; i < strlen(balanceStr); i++) {
+    Serial.print((char)balanceBuff[i]);
+  }
+  Serial.println();
+
+  bool success = writeBytesToBlock(BALANCE_BLOCK, balanceBuff);
+
+  if (success) {
+    Serial.print(F("✅ New balance written: "));
+    Serial.println(balanceStr);
+  } else {
+    Serial.println(F("❌ Failed to write new balance."));
+  }
+
+  return success;
 }

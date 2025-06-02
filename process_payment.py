@@ -3,11 +3,12 @@ import csv
 import time
 import os
 from datetime import datetime
+from web.db import update_payment_status_db, get_latest_unpaid_entry
 
 # Configuration
 CSV_FILE = 'plates_log.csv'
-RATE_PER_HOUR = 200
-SERIAL_PORT = 'COM16'  # Change this to your Arduino port
+RATE_PER_HOUR = 500
+SERIAL_PORT = 'COM6'  # Change this to your Arduino port
 BAUD_RATE = 9600
 SERIAL_TIMEOUT = 5
 
@@ -71,6 +72,7 @@ class ParkingPaymentSystem:
     def parse_card_data(self, line):
         """Parse card data from Arduino"""
         try:
+            print(f"[PARSE] Parsing card data: {line}")
             if not line.startswith("PLATE:") or ";BALANCE:" not in line:
                 return None, None
             
@@ -90,30 +92,9 @@ class ParkingPaymentSystem:
             return None, None
     
     def lookup_unpaid_entry(self, plate):
-        """Find the most recent unpaid entry for a plate"""
-        try:
-            with open(CSV_FILE, 'r') as f:
-                reader = csv.DictReader(f)
-                unpaid_entries = [
-                    row for row in reader
-                    if row['Plate Number'].strip() == plate and row['Payment Status'].strip() == '0'
-                ]
-            
-            if not unpaid_entries:
-                return None
-            
-            # Sort by timestamp (most recent first)
-            unpaid_entries.sort(
-                key=lambda x: datetime.strptime(x['Timestamp'], "%Y-%m-%d %H:%M:%S"), 
-                reverse=True
-            )
-            
-            entry_time = datetime.strptime(unpaid_entries[0]['Timestamp'], "%Y-%m-%d %H:%M:%S")
-            return entry_time
-            
-        except Exception as e:
-            print(f"[ERROR] Failed to lookup plate {plate}: {e}")
-            return None
+          """Look up the latest unpaid entry from DB (not CSV)"""
+          return get_latest_unpaid_entry(plate)
+
     
     def calculate_parking_fee(self, entry_time):
         """Calculate parking fee based on duration"""
@@ -123,59 +104,22 @@ class ParkingPaymentSystem:
         return duration_hours, amount_due
     
     def update_payment_status(self, plate, amount_paid):
-        """Update payment status in CSV"""
+        """Update DB and log to CSV"""
         try:
-            rows = []
-            with open(CSV_FILE, 'r') as f:
-                reader = csv.reader(f)
-                rows = list(reader)
-            
-            if not rows:
-                print("[ERROR] CSV file is empty")
-                return False
-            
-            header = rows[0]
-            updated = False
-            
-            # Find the most recent unpaid entry for this plate
-            unpaid_entries = []
-            for i, row in enumerate(rows[1:], start=1):
-                if (len(row) >= 3 and row[0].strip() == plate and 
-                    row[1].strip() == '0'):
-                    unpaid_entries.append((i, row))
-            
-            if unpaid_entries:
-                # Sort by timestamp and update the most recent
-                timestamp_index = 2  # Timestamp is at index 2
-                unpaid_entries.sort(
-                    key=lambda x: datetime.strptime(x[1][timestamp_index], "%Y-%m-%d %H:%M:%S"), 
-                    reverse=True
-                )
-                
-                latest_index = unpaid_entries[0][0]
-                rows[latest_index][1] = '1'  # Mark as paid
-                
-                # Add amount paid if column doesn't exist or is empty
-                if len(rows[latest_index]) < 4:
-                    rows[latest_index].append(str(amount_paid))
-                else:
-                    rows[latest_index][3] = str(amount_paid)
-                
-                updated = True
-            
-            if updated:
-                with open(CSV_FILE, 'w', newline='') as f:
-                    writer = csv.writer(f)
-                    writer.writerows(rows)
-                print(f"[UPDATED] Payment status marked as paid for {plate}")
-                return True
-            else:
-                print(f"[ERROR] No unpaid record found to update for {plate}")
-                return False
-                
+            # Update DB
+            update_payment_status_db(plate, amount_paid)
+    
+            # Append payment log to CSV for backup
+            with open(CSV_FILE, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([plate, '1', time.strftime("%Y-%m-%d %H:%M:%S"), amount_paid])
+            print(f"[LOGGED] Backup written to CSV for {plate}")
+            return True
+    
         except Exception as e:
-            print(f"[ERROR] Failed to update payment status: {e}")
+            print(f"[ERROR] Failed to update DB or log payment: {e}")
             return False
+
     
     def process_payment(self, plate, balance, entry_time):
         """Process payment for a specific plate"""
@@ -198,41 +142,73 @@ class ParkingPaymentSystem:
             self.ser.write(f"{amount_due:.2f}\n".encode())
             print(f"[SENT] Payment amount {amount_due:.2f} RWF to Arduino")
             
-            # Wait for Arduino response
-            response = self.read_serial_line(timeout=10)
-            if not response:
-                print("[ERROR] No response from Arduino")
-                return False
+            # Keep reading responses until we get DONE, INSUFFICIENT, or an ERROR
+            start_time = time.time()
+            timeout = 15  # Increased timeout to allow for Arduino processing
             
-            print(f"[ARDUINO] {response}")
-            
-            if response.startswith("DONE:"):
-                # Parse response: DONE:amount_paid:new_balance
-                parts = response.split(':')
-                if len(parts) >= 3:
-                    amount_paid = float(parts[1])
-                    new_balance = float(parts[2])
-                    
-                    # Update payment status in CSV
-                    if self.update_payment_status(plate, amount_paid):
-                        print(f"\n[SUCCESS] Payment processed successfully!")
-                        print(f"Amount Paid: {amount_paid:.2f} RWF")
-                        print(f"Remaining Balance: {new_balance:.2f} RWF")
-                        return True
-                    else:
-                        print("[WARNING] Payment deducted but CSV update failed")
-                        return False
-                else:
-                    print("[ERROR] Invalid response format from Arduino")
-                    return False
-            
-            elif response == "INSUFFICIENT":
-                print("[ERROR] Arduino reports insufficient balance")
-                return False
-            else:
-                print(f"[ERROR] Unexpected Arduino response: {response}")
-                return False
+            while time.time() - start_time < timeout:
+                response = self.read_serial_line(timeout=2)
+                if not response:
+                    continue
                 
+                print(f"[RECEIVED] {response}")
+                
+                # Check for final responses
+                if response.startswith("DONE:"):
+                    # Parse response: DONE:amount_paid:new_balance
+                    parts = response.split(':')
+                    if len(parts) >= 3:
+                        try:
+                            amount_paid = float(parts[1])
+                            new_balance = float(parts[2])
+                            
+                            # Update payment status in DB
+                            if self.update_payment_status(plate, amount_paid):
+                                print(f"\n[SUCCESS] Payment processed successfully!")
+                                print(f"Amount Paid: {amount_paid:.2f} RWF")
+                                print(f"Remaining Balance: {new_balance:.2f} RWF")
+                                return True
+                            else:
+                                print("[WARNING] Payment deducted but DB update failed")
+                                return False
+                        except (ValueError, IndexError) as e:
+                            print(f"[ERROR] Failed to parse DONE response: {e}")
+                            return False
+                    else:
+                        print("[ERROR] Invalid DONE response format from Arduino")
+                        return False
+                
+                elif response == "INSUFFICIENT":
+                    print("[ERROR] Arduino reports insufficient balance")
+                    return False
+                
+                elif response.startswith("ERROR:"):
+                    print(f"[ERROR] Arduino error: {response}")
+                    return False
+                
+                elif response == "ABORTED":
+                    print("[INFO] Payment aborted by Arduino")
+                    return False
+                
+                # Handle info/debug messages (don't return, just log)
+                elif (response.startswith("Debug:") or 
+                      response.startswith("🔓") or 
+                      response.startswith("✅") or 
+                      response.startswith("❌") or
+                      "Authentication success" in response or
+                      "Data written successfully" in response or
+                      "New balance written" in response):
+                    print(f"[INFO] {response}")
+                    # Continue reading for the final response
+                
+                else:
+                    print(f"[INFO] {response}")
+                    # Continue reading for other messages
+            
+            # If we reach here, we timed out
+            print("[ERROR] Timeout waiting for Arduino response")
+            return False
+                    
         except Exception as e:
             print(f"[ERROR] Communication error with Arduino: {e}")
             return False

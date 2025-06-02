@@ -7,7 +7,9 @@ import serial.tools.list_ports
 import csv
 from collections import Counter
 import pytesseract
-import random
+from web.db import create_table_if_not_exists, log_plate_to_db, plate_exists_unpaid
+
+create_table_if_not_exists()
 
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
@@ -166,16 +168,7 @@ try:
                                         (current_time - last_entry_time) > entry_cooldown):
                                         
 
-                                        # Check if the plate already exists with status 0 (not yet paid/exited)
-                                        should_log = True
-                                        with open(csv_file, 'r') as f:
-                                            reader = csv.reader(f)
-                                            next(reader)  # Skip header
-                                            for row in reader:
-                                                if len(row) >= 2 and row[0] == most_common and row[1] == '0':
-                                                    print(f"[BLOCKED] {most_common} has already entered and not paid/exited.")
-                                                    should_log = False
-                                                    break
+                                        should_log = not plate_exists_unpaid(most_common)
                                         
                                         if should_log:
                                             # Log to CSV
@@ -183,6 +176,9 @@ try:
                                                 writer = csv.writer(f)
                                                 writer.writerow([most_common, 0, time.strftime('%Y-%m-%d %H:%M:%S')])
                                             print(f"[SAVED] {most_common} logged to CSV.")
+                                            
+                                            #save to db
+                                            log_plate_to_db(most_common, payment_status=0, gate="entry")
                                             
                                             # Control gate
                                             if arduino:
@@ -199,21 +195,8 @@ try:
                                             last_entry_time = current_time
                                         else:
                                             print(f"[INFO] Duplicate entry blocked for {most_common}.")
+                                            time.sleep(5)
                                         
-                                                                                
-                                        # Control gate
-                                        if arduino:
-                                            try:
-                                                arduino.write(b'1')
-                                                print("[GATE] Opening gate (sent '1')")
-                                                time.sleep(15)
-                                                arduino.write(b'0')
-                                                print("[GATE] Closing gate (sent '0')")
-                                            except serial.SerialException as e:
-                                                print(f"[ERROR] Gate control failed: {e}")
-                                        
-                                        last_saved_plate = most_common
-                                        last_entry_time = current_time
                                     else:
                                         print("[SKIPPED] Duplicate within 5 min window.")
                                     

@@ -7,6 +7,8 @@ import serial
 import serial.tools.list_ports
 import csv
 from collections import Counter
+from web.db import is_payment_complete_db, update_exit_status_db, is_already_exited
+
 
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
@@ -95,51 +97,7 @@ def read_distance(arduino):
         return 150
 
 def is_payment_complete(plate_number):
-    """Check if the latest record for this plate has Payment Status = 1 (Paid but not exited)"""
-    if not os.path.exists(csv_file):
-        print(f"[WARNING] CSV file {csv_file} not found")
-        return False
-
-    try:
-        with open(csv_file, 'r') as f:
-            reader = list(csv.DictReader(f))
-            for row in reversed(reader):  # Check from most recent entry
-                if row['Plate Number'] == plate_number:
-                    return row['Payment Status'] == '1'
-        return False  # Plate not found
-    except Exception as e:
-        print(f"[ERROR] Reading CSV file: {e}")
-        return False
-
-
-def update_exit_status(plate_number):
-    """Update CSV to mark vehicle as exited (optional feature)"""
-    if not os.path.exists(csv_file):
-        return
-    
-    try:
-        # Read all rows
-        rows = []
-        with open(csv_file, 'r') as f:
-            reader = csv.DictReader(f)
-            rows = list(reader)
-        
-        # Update the most recent entry for this plate
-        for i in reversed(range(len(rows))):
-            if rows[i]['Plate Number'] == plate_number:
-                rows[i]['Payment Status'] = '2'  # 2 = Exited
-                break
-        
-        # Write back to CSV
-        with open(csv_file, 'w', newline='') as f:
-            if rows:
-                writer = csv.DictWriter(f, fieldnames=['Plate Number', 'Payment Status', 'Timestamp'])
-                writer.writeheader()
-                writer.writerows(rows)
-        
-        print(f"[UPDATED] {plate_number} marked as exited")
-    except Exception as e:
-        print(f"[ERROR] Updating exit status: {e}")
+    return is_payment_complete_db(plate_number)
 
 # Connect to Arduino
 arduino = connect_arduino()
@@ -218,6 +176,14 @@ try:
                                     if is_payment_complete(most_common):
                                         print(f"[ACCESS GRANTED] Payment complete for {most_common}")
                                         
+                                        update_exit_status_db(most_common)
+                                        
+                                        # Log exit to CSV
+                                        with open(csv_file, 'a', newline='') as f:
+                                            writer = csv.writer(f)
+                                            writer.writerow([most_common, '2', time.strftime('%Y-%m-%d %H:%M:%S')])
+                                        print(f"[LOGGED] Exit recorded in CSV for {most_common}")
+                                        
                                         # Control gate
                                         if arduino:
                                             try:
@@ -229,14 +195,31 @@ try:
                                             except serial.SerialException as e:
                                                 print(f"[ERROR] Gate control failed: {e}")
                                         
-                                        # Update exit status (optional)
-                                        update_exit_status(most_common)
-                                        
                                         last_exited_plate = most_common
                                         last_exit_time = current_time
                                         
+                                        time.sleep(5)
+                                        
                                     else:
-                                        print(f"[ACCESS DENIED] Payment NOT complete for {most_common}")
+                                        if is_already_exited(most_common):
+                                            print(f"[ACCESS DENIED] Car with plate {most_common} can't exit twice")
+                                            if arduino:
+                                                try:
+                                                    arduino.write(b'2')  # Alert
+                                                    print("[Alert] Alerting unauthorised exit (sent '2')")
+                                                except serial.SerialException as e:
+                                                    print(f"[ERROR] Gate control failed: {e}")
+                                            time.sleep(5)
+                                        else:
+                                            print(f"[ACCESS DENIED] Payment NOT complete for {most_common}")
+                                            if arduino:
+                                                try:
+                                                    arduino.write(b'2')  # Alert
+                                                    print("[Alert] Alerting unauthorised exit (sent '2')")
+                                                except serial.SerialException as e:
+                                                    print(f"[ERROR] Gate control failed: {e}")
+                                            time.sleep(5)
+                                            
                                         if arduino:
                                             try:
                                                 arduino.write(b'2')  # Trigger warning buzzer

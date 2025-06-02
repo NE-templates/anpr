@@ -15,7 +15,7 @@ long currentBalance = 0;
 
 // Timeout variables
 unsigned long readySentTime = 0;
-const unsigned long RESPONSE_TIMEOUT = 10000; // 10 seconds
+const unsigned long RESPONSE_TIMEOUT = 10000;
 
 void setup() {
     Serial.begin(9600);
